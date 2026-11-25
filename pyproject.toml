@@ -1,0 +1,22 @@
+[project]
+name = "passing-check"
+version = "0.0.1"
+description = "Ledger and gates for a pre-registered record of what a passing KV cache reuse check establishes"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=77"]      # the first release that reads an SPDX license string
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

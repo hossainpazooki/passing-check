@@ -1,0 +1,12 @@
+passing-check
+Copyright 2026 Hossain Pazooki
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+------------------------------------------------------------------------
+
+The chassis modules under src/passing_check/ (ledger_check and lint_scope)
+and their tests are copied from the same author's lag-ladder repository at
+the commit named in UPSTREAM.md.
+
+No third-party material is included.

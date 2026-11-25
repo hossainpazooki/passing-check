@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+# Raw output never enters history. Numbers reach the ledger only through a summarizer that
+# recomputes them from these trees.
+results/
+data/
+traces/
+.DS_Store
