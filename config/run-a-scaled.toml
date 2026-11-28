@@ -1,0 +1,4 @@
+# Run A, the reduced-size pass: RANDOM read again with its noise shrunk by each scale (the same draw).
+# On the key deviation an arm reads its scale squared times REUSE: 0.36, 0.09 and 0.01 of it.
+# Proposed until a ledger entry names this file by digest.
+scales = [0.6, 0.3, 0.1]

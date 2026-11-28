@@ -193,3 +193,80 @@ def test_a_control_that_fails_is_written_to_the_report_before_the_run_stops(setu
     assert "prefix copy" in report["failed"]["message"] and not report["scores"]
     with pytest.raises(ValueError, match="a control failed"):
         run_a.main(["--run", "--resume", *base, *out])
+
+
+def test_the_reduced_size_pass_reads_scale_squared_on_the_keys_and_the_same_fresh_decode(setup):
+    tmp_path, traces, base = setup
+    main_out, scaled_out = tmp_path / "out", tmp_path / "out-scaled"
+    scaled = tmp_path / "run-a-scaled.toml"
+    scaled.write_text("scales = [0.3, 0.1]\n", encoding="utf-8")
+    run_a.main(["--prepare", "--traces", str(traces), *base])
+    run_a.main(["--run", *base, "--output", str(main_out), "--device", "cpu"])
+    main_summary_args = ["--summarize", *base, "--output", str(main_out)]
+    assert run_a.main(main_summary_args) == 0
+    run_a.main(["--run", *base, "--output", str(scaled_out), "--device", "cpu", "--scaled", str(scaled)])
+    assert run_a.main(["--summarize", *base, "--output", str(scaled_out), "--main", str(main_out)]) == 0
+    main_summary = json.loads((main_out / "summary.json").read_text())
+    summary = json.loads((scaled_out / "summary.json").read_text())
+    assert summary["pass"] == "scaled" and summary["arms"] == ["random_0.3", "random_0.1"]
+    with pytest.raises(ValueError, match="pass --main"):
+        run_a.main(["--summarize", *base, "--output", str(scaled_out)])
+    with pytest.raises(ValueError, match="missing under --main"):
+        run_a.main(["--summarize", *base, "--output", str(scaled_out), "--main", str(tmp_path / "nowhere")])
+    assert summary["checked_against_main"] and "ladder" not in summary and "figure" not in summary
+    by_handoff = {r["handoff"]: r for r in main_summary["handoffs"]}
+    for row in summary["handoffs"]:
+        reuse = by_handoff[row["handoff"]]["reuse"]["key_mean"]
+        assert row["reuse_key_mean"] == pytest.approx(reuse, rel=1e-9)
+        assert row["random_0.3"]["key_mean"] == pytest.approx(0.09 * reuse, rel=1e-3)
+        assert row["random_0.1"]["key_mean"] == pytest.approx(0.01 * reuse, rel=1e-3)
+        # Smaller noise along the same direction moves the predictions less.
+        assert row["random_0.1"]["mean_kl"] < row["random_0.3"]["mean_kl"] < by_handoff[row["handoff"]]["random"]["mean_kl"]
+        assert row["reuse"]["mean_kl"] == pytest.approx(by_handoff[row["handoff"]]["reuse"]["mean_kl"])
+        assert row["reuse"]["common_share"] == pytest.approx(by_handoff[row["handoff"]]["reuse"]["common_share"])
+    for reading in ("mean_kl", "one_minus_common_share"):
+        assert sum(summary["brackets"][reading].values()) == 3
+    assert set(summary["controls"]["scaled_key_ratio"]) == {"random_0.3", "random_0.1"}
+    assert summary["names_reported"] is False and summary["fresh"]["names"] is None
+    assert all(r["fresh"]["names"] is None and r["random_0.1"]["overlap"] is None for r in summary["handoffs"])
+    assert main_summary["fresh"]["names"] is None and main_summary["handoffs"][0]["fresh"]["grounding"] is None
+    # A control that fails on the first handoff leaves nothing scored; the summary says so by name.
+    report_path = scaled_out / "report.json"
+    report = json.loads(report_path.read_text())
+    report_path.write_text(json.dumps(report | {"scores": {}, "failed": {"handoff": "h", "message": "planted", "controls": {}}}))
+    with pytest.raises(ValueError, match="before any handoff was scored: planted"):
+        run_a.main(["--summarize", *base, "--output", str(scaled_out), "--main", str(main_out)])
+    report_path.write_text(json.dumps(report))
+    scales = [0.1, 0.3, 1.0]
+    assert run_a.bracket(0.05, [0.1, 0.5, 2.0], scales) == "below 0.1"
+    assert run_a.bracket(0.1, [0.1, 0.5, 2.0], scales) == "0.1 to 0.3"
+    assert run_a.bracket(0.7, [0.1, 0.5, 2.0], scales) == "0.3 to 1"
+    assert run_a.bracket(2.0, [0.1, 0.5, 2.0], scales) == "at or above 1"
+    assert run_a.bracket(0.7, [0.5, 0.1, 2.0], scales) == "not ordered"
+    assert run_a.bracket(0.7, [0.5, 0.5, 2.0], scales) == "0.3 to 1"          # tied arms count as ordered
+    # A first-layer failure still leaves the key ratio in the report, in either pass.
+    config = tmp_path / "run-a.toml"
+    strict = tmp_path / "strict.toml"
+    strict.write_text(config.read_text().replace("layer0_key_limit = 1e-6", "layer0_key_limit = -1.0"))
+    for extra, field in (([], "random_key_ratio"), (["--scaled", str(scaled)], "scaled_key_ratio")):
+        strict_in, strict_out = tmp_path / f"in-{field}", tmp_path / f"out-{field}"
+        strict_base = ["--config", str(strict), "--cell", "native", "--inputs", str(strict_in)]
+        run_a.main(["--prepare", "--traces", str(traces), *strict_base])
+        with pytest.raises(ValueError, match="first-layer keys"):
+            run_a.main(["--run", *strict_base, "--output", str(strict_out), "--device", "cpu", *extra])
+        failed = json.loads((strict_out / "report.json").read_text())["failed"]
+        assert field in failed["controls"] and "layer0_reuse_key" in failed["controls"]
+        assert str(failed["controls"]) in failed["message"]
+    # A scaled pass cannot be resumed as a two-arm run, and the reverse.
+    with pytest.raises(ValueError, match="resume refused"):
+        run_a.main(["--run", "--resume", *base, "--output", str(scaled_out), "--device", "cpu"])
+    # A fresh decode that differs from the two-arm run's is refused.
+    other = tmp_path / "other"
+    other.mkdir()
+    for path in main_out.glob("*.npz"):
+        with np.load(path) as arrays:
+            changed = {k: arrays[k] for k in arrays.files}
+        changed["fresh_decode"] = changed["fresh_decode"] + 1
+        np.savez_compressed(other / path.name, **changed)
+    with pytest.raises(ValueError, match="fresh decode differs"):
+        run_a.main(["--summarize", *base, "--output", str(scaled_out), "--main", str(other)])

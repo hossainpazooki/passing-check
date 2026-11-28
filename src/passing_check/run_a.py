@@ -4,6 +4,8 @@ same size on the key deviation, all on the same prompt.
     python -m passing_check.run_a --prepare   --config C --cell NAME --traces DIR --inputs DIR
     python -m passing_check.run_a --run       --config C --cell NAME --inputs DIR --output DIR [--limit N] [--resume]
     python -m passing_check.run_a --summarize --config C --cell NAME --inputs DIR --output DIR
+    python -m passing_check.run_a --run       ... --output DIR2 --scaled S       (the reduced-size pass)
+    python -m passing_check.run_a --summarize ... --output DIR2 --main DIR
 
 `--prepare` is CPU only: it finds the handoffs, tokenizes them, aligns sender and receiver, and writes one
 input file per handoff with a manifest of digests. `--run` reads nothing but those files. `--summarize`
@@ -14,6 +16,9 @@ Arms, per handoff, all against FRESH (the reader's own prefill of the receiver p
           moved to their positions in R; every other token of R computed against the cache so assembled.
   RANDOM  the fresh states of the matched tokens plus isotropic noise whose size per token, layer and head
           is REUSE's error. It reads the same as REUSE on the key deviation, by construction.
+The reduced-size pass reads RANDOM again with its noise shrunk by each scale in S (the same draw, so the
+same direction), against the same FRESH: what a small perturbation does to the same readings. It needs no
+output of the two-arm run and changes none; its summary checks its fresh decode against that run's.
 Controls, on the first handoff of the run order (the largest sender): a second FRESH pass, which must
 reproduce the first exactly, and a copy of the reader's own states for a prefix of R, their keys moved to
 position 0 and back by the same relocation REUSE uses, which must stay within `control_max_logit_error`.
@@ -164,6 +169,30 @@ def load_model(cfg, cell, device):
     return model.eval().to(device)
 
 
+def scaled_scales(args):
+    """The noise scales of the reduced-size pass; () for the two-arm run."""
+    if args.scaled is None:
+        return ()
+    scales = tuple(tomllib.loads(Path(args.scaled).read_text(encoding="utf-8"))["scales"])
+    if not scales or any(not 0 < s < 1 for s in scales) or len(set(scales)) != len(scales):
+        raise ValueError("scales must be distinct and lie strictly between 0 and 1")
+    return scales
+
+
+def bracket(value, references, scales):
+    """Where REUSE's value falls against the same handoff's noise arms, given smallest noise first:
+    "below 0.1", "0.1 to 0.3", "0.3 to 1" or "at or above 1" for scales (0.1, 0.3, 1). "not ordered" when
+    an arm's own value is below a smaller arm's, so no bracket exists; equal arms count as ordered."""
+    if any(later < earlier for earlier, later in zip(references, references[1:])):
+        return "not ordered"
+    place = sum(value >= reference for reference in references)
+    if place == 0:
+        return f"below {scales[0]:g}"
+    if place == len(scales):
+        return f"at or above {scales[-1]:g}"
+    return f"{scales[place - 1]:g} to {scales[place]:g}"
+
+
 def read_arm(model, cache, prompt_logits, continuation, cfg):
     """Teacher-forced logits for every token of the recorded response (the first from the logits after the
     prompt), then the cache cut back to the prompt and a greedy decode from the bare prompt."""
@@ -181,12 +210,15 @@ def run(args, cfg, cell, manifest):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.use_deterministic_algorithms(True)
+    scales = scaled_scales(args)
+    arms = tuple(f"random_{s:g}" for s in scales) if scales else ARMS
     model = load_model(cfg, cell, device)
     freq = model.model.rotary_emb.inv_freq.detach().cpu()
     args.output.mkdir(parents=True, exist_ok=True)
     report_path = args.output / "report.json"
     identity = {"config_sha256": digest(args.config), "manifest_sha256": digest(args.inputs / "manifest.json"),
                 "code_sha256": {p.name: digest(p) for p in sorted(Path(__file__).parent.glob("*.py"))},
+                "scaled_sha256": digest(args.scaled) if scales else None,
                 "transformers": transformers.__version__, "torch": torch.__version__, "device": str(device),
                 "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None}
     order = run_order(manifest)
@@ -200,7 +232,7 @@ def run(args, cfg, cell, manifest):
             raise ValueError(f"resume refused: a control failed on {report['failed']['handoff']} and the run "
                              "stopped there; a failed control is not passed over")
     else:
-        report = {"identity": identity, "cell": args.cell,
+        report = {"identity": identity, "cell": args.cell, "arms": list(arms),
                   "git_commit": git_commit(),
                   "inv_freq_sha256": hashlib.sha256(freq.numpy().tobytes()).hexdigest(),
                   "run_order": [r["handoff"] for r in order], "scores": {}, "complete": False}
@@ -248,23 +280,39 @@ def run(args, cfg, cell, manifest):
         source = matched(prefill(model, sender, cfg["chunk_tokens"]), pairs[:, 0])
         reused = relocated_candidate(source, pairs, freq)
         del source
-        candidates = {"reuse": reused, "random": random_candidate(fresh_states, reused, make_rng(cfg["seed"] + index))}
+        if scales:
+            # The two-arm run's own draw for this handoff, shrunk: each arm lies along RANDOM's direction.
+            candidates = {arm: random_candidate(fresh_states, reused, make_rng(cfg["seed"] + index), s)
+                          for arm, s in zip(arms, scales)}
+        else:
+            candidates = {"reuse": reused, "random": random_candidate(fresh_states, reused, make_rng(cfg["seed"] + index))}
         # The unrelated-token anchor: each matched token's fresh key against another matched token's.
         shifted = unrelated_candidate(fresh_states, pairs, freq)
         outputs = {"continuation": continuation, "fresh_decode": fresh_decode,
                    "unrelated_key": key_deviation(fresh_states, shifted, pairs, freq).mean((1, 2))}
         del shifted
-        deviation = {arm: key_deviation(fresh_states, candidates[arm], pairs, freq) for arm in ARMS}
+        deviation = {arm: key_deviation(fresh_states, candidates[arm], pairs, freq) for arm in arms}
+        reuse_deviation = deviation["reuse"] if "reuse" in deviation else key_deviation(fresh_states, reused, pairs, freq)
         # Two controls on every handoff, before any output is read under an arm. A first-layer key depends on
         # its token and its position only, so with position removed REUSE's must equal FRESH's; a wrong rotary
         # schedule shows here. And RANDOM must read as REUSE on the key deviation, or the contrast is void.
-        controls["layer0_reuse_key"] = float(deviation["reuse"][:, 0].max())
-        controls["random_key_ratio"] = float(deviation["random"].mean() / deviation["reuse"].mean())
+        controls["layer0_reuse_key"] = float(reuse_deviation[:, 0].max())
+        if scales:
+            # A scaled arm must read scale squared times REUSE on the key deviation: 1.0 here means it does.
+            controls["scaled_key_ratio"] = {arm: float(deviation[arm].mean() / reuse_deviation.mean() / s ** 2)
+                                            for arm, s in zip(arms, scales)}
+            ratios = list(controls["scaled_key_ratio"].values())
+        else:
+            controls["random_key_ratio"] = float(deviation["random"].mean() / deviation["reuse"].mean())
+            ratios = [controls["random_key_ratio"]]
         if controls["layer0_reuse_key"] > cfg["layer0_key_limit"]:
             stop(f"REUSE's first-layer keys differ from FRESH's after position is removed: {controls}")
-        if abs(controls["random_key_ratio"] - 1) > cfg["key_match_relative"]:
-            stop(f"the random arm does not match the reused cache on the key deviation: {controls}")
-        for arm in ARMS:
+        if any(abs(ratio - 1) > cfg["key_match_relative"] for ratio in ratios):
+            stop(("the random arm does not match the reused cache on the key deviation" if not scales else
+                  "a scaled arm is not its scale squared of the reused cache on the key deviation") + f": {controls}")
+        if scales:
+            outputs["reuse_key"] = reuse_deviation.mean((1, 2))
+        for arm in arms:
             outputs[f"{arm}_key"] = deviation[arm].mean((1, 2))
             cache, at_end = construct(model, receiver, pairs, candidates[arm], cfg["chunk_tokens"])
             logits, decoded = read_arm(model, cache, at_end, continuation, cfg)
@@ -347,10 +395,17 @@ def summarize(args, cfg, manifest):
         raise ValueError("the report was run on a different prepared manifest")
     order = [r["handoff"] for r in run_order(manifest)]
     scored = list(report["scores"])
+    if report.get("failed") and not scored:
+        # Nothing was scored, so there is no prefix to read; say why before refusing.
+        raise ValueError(f"a control failed on {report['failed']['handoff']} before any handoff was scored: "
+                         f"{report['failed']['message']}")
     if report["run_order"] != order or scored != order[:len(scored)] or not scored:
         raise ValueError("the scored handoffs must be a non-empty prefix of the prepared run order")
     tokenizer = AutoTokenizer.from_pretrained(cfg["model"], revision=cfg["revision"])
     stop_ids = set(manifest["stop_ids"])
+    arms = tuple(report.get("arms", ARMS))
+    if "reuse" not in arms and args.main is None:
+        raise ValueError("a reduced-size pass is summarized against the two-arm run's output: pass --main")
     rows = []
     for hid in scored:
         result = report["scores"][hid]
@@ -362,6 +417,15 @@ def summarize(args, cfg, manifest):
             body = inp["receiver"][manifest["template_head"]:len(inp["receiver"]) - manifest["template_tail"]]
             prompt = tokenizer.decode(body, skip_special_tokens=True)
             n = len(out["continuation"])
+            if args.main is not None:
+                # The reduced-size pass is read against the same fresh decode as the two-arm run, or not at all.
+                if not (args.main / result["file"]).exists():
+                    raise ValueError(f"the two-arm run's output for {hid} is missing under --main")
+                with np.load(args.main / result["file"], allow_pickle=False) as main_out:
+                    if not np.array_equal(main_out["fresh_decode"], out["fresh_decode"]):
+                        raise ValueError(f"the fresh decode differs from the two-arm run's: {hid}")
+                    main_read = {arm: (float(main_out[f"{arm}_kl"].mean()), cut_at(main_out[f"{arm}_decode"], stop_ids))
+                                 for arm in ARMS}
             # Every decode is read up to its first end-of-turn token.
             fresh_ids = cut_at(out["fresh_decode"], stop_ids)
             fresh_text = tokenizer.decode(fresh_ids, skip_special_tokens=True)
@@ -371,7 +435,7 @@ def summarize(args, cfg, manifest):
                    "fresh": {"decode_tokens": len(fresh_ids), "ended": len(fresh_ids) < len(out["fresh_decode"]),
                              "distinct_words": distinct_words(fresh_text),
                              "names": len(fresh_names), "grounding": grounding(fresh_names, prompt)}}
-            for arm in ARMS:
+            for arm in arms:
                 kl, top1, key = out[f"{arm}_kl"], out[f"{arm}_top1_agrees"], out[f"{arm}_key"]
                 if kl.shape != (n,) or top1.shape != (n,) or not np.isfinite(kl).all() or np.any(kl < 0):
                     raise ValueError(f"invalid per-token readings: {hid} {arm}")
@@ -388,13 +452,77 @@ def summarize(args, cfg, manifest):
                             "overlap": jaccard(fresh_names, names), "set_changed": names != fresh_names,
                             "grounding": grounding(names, prompt)}
             # Checked by the run before any output was read; checked again here from the stored readings.
-            if abs(row["random"]["key_mean"] - row["reuse"]["key_mean"]) > cfg["key_match_relative"] * row["reuse"]["key_mean"]:
-                raise ValueError(f"the random arm does not match the reused cache on the key deviation: {hid}")
+            if "reuse" in arms:
+                if abs(row["random"]["key_mean"] - row["reuse"]["key_mean"]) > cfg["key_match_relative"] * row["reuse"]["key_mean"]:
+                    raise ValueError(f"the random arm does not match the reused cache on the key deviation: {hid}")
+            else:
+                row["reuse_key_mean"] = float(out["reuse_key"].mean())
+                for arm in arms:
+                    expected = float(arm.removeprefix("random_")) ** 2 * row["reuse_key_mean"]
+                    if abs(row[arm]["key_mean"] - expected) > cfg["key_match_relative"] * expected:
+                        raise ValueError(f"a scaled arm is not its scale squared of REUSE on the key deviation: {hid} {arm}")
+                if args.main is not None:
+                    # REUSE against this handoff's own noise arms, smallest first, RANDOM (scale 1) last.
+                    by_scale = sorted(arms, key=lambda a: float(a.removeprefix("random_")))
+                    sizes = [float(a.removeprefix("random_")) for a in by_scale] + [1.0]
+                    row["reuse"] = {"mean_kl": main_read["reuse"][0],
+                                    "common_share": common_share(fresh_ids, main_read["reuse"][1])}
+                    row["random"] = {"mean_kl": main_read["random"][0],
+                                     "common_share": common_share(fresh_ids, main_read["random"][1])}
+                    row["bracket"] = {
+                        "mean_kl": bracket(row["reuse"]["mean_kl"],
+                                           [row[a]["mean_kl"] for a in by_scale] + [row["random"]["mean_kl"]], sizes),
+                        "one_minus_common_share": bracket(
+                            1 - row["reuse"]["common_share"],
+                            [1 - row[a]["common_share"] for a in by_scale] + [1 - row["random"]["common_share"]], sizes)}
             rows.append(row)
     # The fallback: where FRESH itself writes too little to name anything, the names readings are not reported.
     degenerate = [r["handoff"] for r in rows if r["fresh"]["distinct_words"] < cfg["fallback_min_distinct_words"]
                   or not r["fresh"]["names"]]
     names_reported = len(degenerate) * 4 <= len(rows)
+
+    def column(arm, field):
+        values = [r[arm][field] for r in rows if r[arm][field] is not None]
+        return summary(values) if values else None
+    table = {arm: {field: column(arm, field) for field in
+                   ("key_mean", "key_p90", "key_max", "mean_kl", "top1_agreement", "agreement_32", "common_share",
+                    "overlap", "grounding", "names")}
+             | {"decode_changed": sum(not r[arm]["identical"] for r in rows),
+                "ended_within_decode": sum(r[arm]["ended"] for r in rows),
+                "named_set_changed": sum(r[arm]["set_changed"] for r in rows),
+                "first_difference_where_changed": summary([r[arm]["first_difference"] for r in rows
+                                                           if not r[arm]["identical"]])
+                if any(not r[arm]["identical"] for r in rows) else None}
+             for arm in arms}
+    fresh = {"grounding": summary([r["fresh"]["grounding"] for r in rows if r["fresh"]["grounding"] is not None])
+             if any(r["fresh"]["grounding"] is not None for r in rows) else None,
+             "names": summary([r["fresh"]["names"] for r in rows]),
+             "ended_within_decode": sum(r["fresh"]["ended"] for r in rows)}
+    if "reuse" not in arms:
+        # The reduced-size pass: the same readings under smaller noise, and nothing that needs REUSE's outputs.
+        if not names_reported:
+            for arm in arms:
+                for field in ("overlap", "grounding", "names", "named_set_changed"):
+                    table[arm][field] = None
+                for r in rows:
+                    for field in ("overlap", "grounding", "names", "set_changed"):
+                        r[arm][field] = None
+            fresh["names"] = fresh["grounding"] = None
+            for r in rows:
+                r["fresh"]["names"] = r["fresh"]["grounding"] = None
+        body = {"cell": report["cell"], "pass": "scaled", "arms": list(arms), "complete": report["complete"],
+                "failed": report.get("failed"),
+                "scored": len(rows), "registered": len(order), "names_reported": names_reported,
+                "fresh_degenerate": degenerate, "checked_against_main": args.main is not None,
+                "controls": report["scores"][scored[0]]["controls"],
+                "reuse_key_mean": summary([r["reuse_key_mean"] for r in rows]),
+                # Per reading, the number of handoffs in each bracket; None without the two-arm run's output.
+                "brackets": {reading: {label: sum(r["bracket"][reading] == label for r in rows)
+                                       for label in sorted({r["bracket"][reading] for r in rows})}
+                             for reading in ("mean_kl", "one_minus_common_share")} if args.main is not None else None,
+                "fresh": fresh, "table": table, "handoffs": rows}
+        write(args.output / "summary.json", body)
+        return body
     anchor = float(np.median([r["unrelated_key_mean"] for r in rows]))
 
     def passing(f):
@@ -428,19 +556,6 @@ def summarize(args, cfg, manifest):
             figure[f"auc_{name}"] = {"auc": auc(key, positive), "changed": changed, "of": len(rows),
                                      "interval": bootstrap(auc, (key, positive), rng, cfg["bootstrap_reps"])}
 
-    def column(arm, field):
-        values = [r[arm][field] for r in rows if r[arm][field] is not None]
-        return summary(values) if values else None
-    table = {arm: {field: column(arm, field) for field in
-                   ("key_mean", "key_p90", "key_max", "mean_kl", "top1_agreement", "agreement_32", "common_share",
-                    "overlap", "grounding", "names")}
-             | {"decode_changed": sum(not r[arm]["identical"] for r in rows),
-                "ended_within_decode": sum(r[arm]["ended"] for r in rows),
-                "named_set_changed": sum(r[arm]["set_changed"] for r in rows),
-                "first_difference_where_changed": summary([r[arm]["first_difference"] for r in rows
-                                                           if not r[arm]["identical"]])
-                if any(not r[arm]["identical"] for r in rows) else None}
-             for arm in ARMS}
     if not names_reported:
         for arm in ARMS:
             for field in ("overlap", "grounding", "names", "named_set_changed"):
@@ -448,6 +563,10 @@ def summarize(args, cfg, manifest):
         for step in ladder:
             step["overlap_among_passing"] = step["passing_with_named_set_changed"] = None
         figure["one_minus_overlap"] = figure["auc_named_set_changed"] = None
+        # FRESH's own names are withheld with the arms': the fallback says the names readings are not reported.
+        fresh["names"] = fresh["grounding"] = None
+        for r in rows:
+            r["fresh"]["names"] = r["fresh"]["grounding"] = None
         for r in rows:
             for arm in ARMS:
                 for field in ("overlap", "grounding", "names", "set_changed"):
@@ -457,11 +576,7 @@ def summarize(args, cfg, manifest):
             "names_reported": names_reported, "fresh_degenerate": degenerate,
             "observed": manifest["observed"], "excluded": [r for r in manifest["records"] if r["excluded"]],
             "controls": report["scores"][scored[0]]["controls"], "unrelated_key_anchor": anchor,
-            "fresh": {"grounding": summary([r["fresh"]["grounding"] for r in rows if r["fresh"]["grounding"] is not None])
-                      if any(r["fresh"]["grounding"] is not None for r in rows) else None,
-                      "names": summary([r["fresh"]["names"] for r in rows]),
-                      "ended_within_decode": sum(r["fresh"]["ended"] for r in rows)},
-            "table": table, "ladder": ladder, "figure": figure, "handoffs": rows}
+            "fresh": fresh, "table": table, "ladder": ladder, "figure": figure, "handoffs": rows}
     write(args.output / "summary.json", body)
     return body
 
@@ -479,6 +594,8 @@ def main(argv=None):
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--limit", type=int, default=0, help="score only the first N handoffs of the run order")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--scaled", type=Path, help="with --run: read the reduced-size RANDOM arms this file lists")
+    parser.add_argument("--main", type=Path, help="with --summarize of a scaled pass: the two-arm run's output")
     args = parser.parse_args(argv)
     cfg, cell = load_config(args.config, args.cell)
     if args.prepare:
@@ -494,7 +611,7 @@ def main(argv=None):
     else:
         body = summarize(args, cfg, manifest)
         print(json.dumps({k: body[k] for k in ("cell", "scored", "registered", "failed", "controls", "table", "ladder",
-                                               "figure")},
+                                               "figure", "brackets") if k in body},
                          indent=2))
     return 0
 

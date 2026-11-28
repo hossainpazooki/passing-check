@@ -49,5 +49,6 @@ A green suite proves the tools work, not a scientific claim. Green means the CI 
   `cache` (the reused and the random cache, the key deviation, logits, greedy decode), `names` (what a
   continuation names), `stats`, and `run_a` (prepare, run, summarize). `tests/` covers each on CPU.
 - `config/run-a.toml`: Run A's settings. Proposed until a ledger entry names the file by digest.
+- `config/run-a-scaled.toml`: the noise scales of Run A's reduced-size pass; the same rule.
 - `ledger/ledger.md`: the record.
 - `UPSTREAM.md`: where the ledger tooling was copied from. Provenance only; nothing is imported or invoked.

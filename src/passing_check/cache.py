@@ -82,10 +82,11 @@ def relocated_candidate(source, pairs, inv_freq):
     return [(relocate(k, pairs[:, 0], pairs[:, 1], inv_freq), v) for k, v in source]
 
 
-def random_candidate(fresh, reused, rng):
+def random_candidate(fresh, reused, rng, scale=1.0):
     # Isotropic noise on the fresh states, with the reused cache's K and V error norm copied exactly per
     # token, layer and head. Removing position is a rotation and keeps norms, so this candidate reads the
-    # same as the reused cache on the key deviation.
+    # same as the reused cache on the key deviation. `scale` shrinks the noise: the key deviation then
+    # reads scale squared times the reused cache's, along the same drawn direction.
     result = []
     for layer_fresh, layer_reused in zip(fresh, reused, strict=True):
         output = []
@@ -93,7 +94,7 @@ def random_candidate(fresh, reused, rng):
             noise = torch.from_numpy(rng.standard_normal(reference.shape).astype(np.float32))
             norm = torch.linalg.vector_norm((candidate - reference).float(), dim=-1, keepdim=True)
             noise = noise / torch.linalg.vector_norm(noise, dim=-1, keepdim=True)
-            output.append(reference + (noise * norm).to(reference.dtype))
+            output.append(reference + (noise * norm * scale).to(reference.dtype))
         result.append(tuple(output))
     return result
 
