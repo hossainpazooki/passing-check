@@ -1,8 +1,7 @@
 """Ledger lint. Runs in CI; every check fails closed.
 
-Copied from lag-ladder `src/lag_ladder/ledger_check.py` (UPSTREAM.md provenance), which adapted it from
-linear-ceiling: structure, chain, block diff and verdict-cell provenance, with the chain REQUIRED from
-entry 0002 on. Changed here: the package name and the `prog` string. The four checks are verbatim.
+Four checks: structure, chain, block diff and verdict-cell provenance. The chain is REQUIRED from
+entry 0002 on, not merely checked when present.
 
 1. STRUCTURE: entry numbers unique; every id in REQUIRED_IDS has a verdict cell from the allowed
    vocabulary. REQUIRED_IDS grows with each registering entry; it starts empty.

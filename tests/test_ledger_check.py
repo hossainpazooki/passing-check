@@ -1,5 +1,4 @@
-"""Copied from lag-ladder tests/test_ledger_check.py (UPSTREAM.md provenance); the package name is the
-only change."""
+"""The four checks of ledger_check: structure, chain, block diff against a base revision, verdict cells."""
 import re
 
 import pytest

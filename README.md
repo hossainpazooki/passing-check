@@ -9,9 +9,8 @@ within a tolerance, or the reader's predictions stay under a threshold on a vali
 repository is the pre-registered record of what such a pass does and does not say about what the
 reader outputs next.
 
-It continues two records. [`linear-ceiling`](https://github.com/hossainpazooki/linear-ceiling) reads a
-cache carried across a change of context, and [`lag-ladder`](https://github.com/hossainpazooki/lag-ladder)
-reads one carried across a change of weights.
+The record stands alone. Every statistic, tolerance, threshold and control it uses is defined in full
+by the ledger entry that registers it, and its code imports from and invokes no other repository.
 
 ## Scope
 
@@ -19,17 +18,16 @@ reads one carried across a change of weights.
 > predictions, answers and task outcome under that cache differ from a fresh read; it does not propose a
 > check, set an acceptance threshold, or measure savings or latency.
 
-## What is read, and where it is defined
+## The four levels
 
-| level | statistic | defined in |
-|---|---|---|
-| keys | f\*(τ): the smallest fraction of matched tokens an oracle removes before the mean key deviation of the rest is within a tolerance τ | linear-ceiling ledger 0023, as 0045 and 0058 correct it |
-| predictions | the mean per-token KL between the next-token distributions with and without reuse | lag-ladder ledger 0011 and 0012; linear-ceiling ledger 0047 |
-| answers | the share of prompts whose greedy final answer changes | lag-ladder ledger 0025 |
-| task | not defined yet | a registering entry in this ledger |
+| level | the question at that level |
+|---|---|
+| keys | do the reused keys agree with fresh ones? |
+| predictions | does the next-token distribution move? |
+| answers | does the generated answer change? |
+| task | does the graded result change? |
 
-The definitions are cited, not recomputed. A rule or a threshold applies here only once an entry in
-this ledger adopts it.
+A statistic for a level exists here once an entry registers it; the ledger says which are.
 
 ## Status
 
@@ -58,4 +56,4 @@ python -m venv .venv
 
 ## License
 
-Apache-2.0. See `LICENSE` and `NOTICE`.
+Apache-2.0. See `LICENSE` and `NOTICE`. `UPSTREAM.md` says where the ledger tooling came from.

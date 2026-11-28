@@ -2,9 +2,7 @@
 README/ledger/docs paraphrases it. Heuristic for paraphrase: a sentence whose distinctive vocabulary
 overlaps heavily with the scope sentence's, and that is not the verbatim sentence itself, is flagged.
 
-Copied from lag-ladder `src/lag_ladder/lint_scope.py` (UPSTREAM.md provenance), which adapted it from
-linear-ceiling: the mechanism is verbatim; SCOPE_SENTENCE and EXEMPT are this repo's. The threshold 0.45
-was calibrated in linear-ceiling on two anchor cases; this repo's tests re-anchor it on its own sentence
+The threshold 0.45 is anchored by two cases on this repo's sentence, one on each side of it
 (tests/test_lint_scope.py).
 """
 import re

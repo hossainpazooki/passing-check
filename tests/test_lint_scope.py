@@ -1,4 +1,4 @@
-"""Adapted from lag-ladder tests/test_lint_scope.py: same cases, re-anchored on this repo's sentence."""
+"""The scope lint: the sentence appears once in the README, and a paraphrase elsewhere is flagged."""
 import io
 
 import pytest
@@ -34,8 +34,8 @@ NEAR_MISS = ("The first registration names the text and the model before any run
 
 
 def test_anchor_scores_sit_on_either_side_of_the_threshold():
-    # The threshold (0.45) was calibrated in linear-ceiling on its own sentence; these two anchors
-    # re-establish the margin on this repo's sentence. If either drifts across, recalibrate, don't tune.
+    # These two anchors hold the margin around the threshold (0.45) on this repo's sentence. If either
+    # drifts across, recalibrate the threshold; do not tune the anchors.
     assert _overlap_score(PARAPHRASE) >= 0.60
     assert _overlap_score(NEAR_MISS) <= 0.30
 

@@ -1,5 +1,4 @@
-"""Shared fixtures. Adapted from lag-ladder tests/conftest.py: the git helpers are verbatim; the seal
-fixtures are dropped with the seal, which this repo does not carry yet."""
+"""Shared fixtures: a throwaway git repo for the checks that read a base revision."""
 import subprocess
 from pathlib import Path
 
