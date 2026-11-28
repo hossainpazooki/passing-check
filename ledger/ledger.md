@@ -179,3 +179,52 @@ an out-of-memory error; keep the scored prefix; resume only with unchanged code,
 Numbers enter the ledger from `run_a --summarize` over the pulled output, never from a log.
 
 **Status.** `[STRETCH]` Designed, not run.
+
+### 0003 — 2026-11-28 — Run A, a second pass registered: RANDOM at reduced size, a reference for small perturbations
+
+prior-entries-sha256: 5dd5ca2df18b9d8ae3812dc75f2565ec554ec02553a8f23c539e794c2d1d3f39
+
+**Why.** Under 0002 the continuation and names readings under REUSE have nothing small to be read against. A
+greedy decode can diverge after any changed token, a repeated FRESH pass reads exactly zero, and RANDOM at
+full size is the largest perturbation read, not the smallest.
+
+**What is added.** After a cell's two-arm run is complete, a second pass reads RANDOM again with its noise
+multiplied by 0.6, by 0.3 and by 0.1 (`config/run-a-scaled.toml`,
+`a8b4f7d98aa3e6ac55f237a2e3863cca03ea0335b1ea4ea0aa9e7dfb05969f42`). The draw is 0002's own for that handoff
+(same seed, same place in the run order), so each arm lies along RANDOM's direction. The prompt, the
+predictions, continuation and names readings and the fallback are 0002's, each against FRESH. On the key
+deviation an arm reads its scale squared times REUSE: 0.36, 0.09 and 0.01 of it.
+
+**Controls; a failure stops the pass.** 0002's two first-handoff controls and its first-layer control, again.
+On every handoff, before any output is read: each arm's mean key deviation over REUSE's within 0.1% of its
+scale squared. The summarizer refuses the pass unless each handoff's FRESH decode is identical to the two-arm
+run's.
+
+**Readout, fixed now; descriptive.** Per cell and arm, 0002's medians with p10 and p90. REUSE's readings from
+the two-arm run are placed beside isotropic noise at 0.1, 0.3, 0.6 and 1 of its size. No threshold and no
+hypothesis row. Per handoff, for (a) the mean KL and (b) one minus the common share: where REUSE's value
+falls against that handoff's own four noise arms, as one of "below 0.1", "0.1 to 0.3", "0.3 to 0.6", "0.6
+to 1", "at or above 1" (a value equal to an arm's counts as above it); per cell, the number of handoffs in
+each. The arms need not rise with the noise on a reading taken from a decode; a handoff where an arm reads
+below a smaller arm is counted as "not ordered" (equal arms count as ordered). The four arms share one draw, so they are not independent of each other. Reported for the cells where the pass completed; 0002's readout does not
+change, and stands alone where the pass did not run.
+
+**Code.** `run_a --run --scaled`, and `--summarize --main`. `cache.random_candidate` takes a scale, 1 by
+default. The two-arm path keeps its arms, controls and output fields, with two changes to its summary: a
+control that failed before any handoff was scored is named before the summary refuses, and where the
+fallback withholds the names readings FRESH's own names and grounding are withheld too. The files' digests
+differ from the commit that carries 0002, and a run records the digests it ran under. 0002's two-arm run is
+made with the code at the commit that carries this entry. Its two-arm path was compared with the code at
+0002's commit on a small random model and three made-up handoffs: every array of every output file, each
+handoff's control readings and the run order were identical, and the summaries differed only in FRESH's
+withheld names.
+
+**What is already known.** Nothing has run on a card under 0002 or under this entry. On a tiny random model
+the pass's arms read their scale squared on the key deviation, and a smaller scale gave a smaller KL.
+A probe of this pass with scales 0.3 and 0.1 read the one handoff 0002 names, on a CPU under transformers
+5.18.0. Its controls passed. At scale 0.3 the mean KL was 0.033 and the common share 0.58; at 0.1, 0.0020
+and 0.56; against 0.24 and 0.36 under REUSE and 7.6 and 0.039 under RANDOM. So REUSE's KL fell between 0.3
+and 1, and the common share was not ordered. The probe's summarizer lacked the two summary changes named
+above; they do not touch these figures. The scale 0.6 was added, and the three scales fixed, after seeing this.
+
+**Status.** `[STRETCH]` Designed, not run.
