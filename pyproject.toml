@@ -5,7 +5,7 @@ description = "Ledger and gates for a pre-registered record of what a passing KV
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-dependencies = []
+dependencies = ["numpy>=2", "torch>=2.13", "transformers==5.17.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

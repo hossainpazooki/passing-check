@@ -12,6 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The CPU build of torch: the suite runs a tiny model on CPU and needs no CUDA wheels.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[dev]"
       - run: pytest -q
       - run: python -m passing_check.lint_scope

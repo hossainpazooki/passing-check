@@ -1,0 +1,29 @@
+# Run A. Proposed; not registered until a ledger entry names this file by digest.
+model = "Qwen/Qwen3-1.7B"
+revision = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+submission_match = "composio_swekit"
+seed = 20261128
+chunk_tokens = 256
+continuation_tokens = 256        # of the recorded response, teacher-forced
+continuation_chunk = 16
+decode_tokens = 384              # greedy decode from the bare prompt
+prefix_control_tokens = 128
+control_max_logit_error = 0.005   # the prefix copy; it read 1.8e-4 on a CPU, and a wrong assembly moves logits by order 1
+key_match_relative = 0.001       # RANDOM's mean key deviation must be within this share of REUSE's
+ladder_fractions = [1.0, 0.3, 0.1, 0.03, 0.01]   # tolerances, as shares of the unrelated-token anchor
+bootstrap_reps = 2000
+layer0_key_limit = 1e-6          # REUSE's first-layer key deviation, position removed, must stay under this
+fallback_min_distinct_words = 20 # a FRESH decode with fewer distinct words, or no name, counts as degenerate
+stop_tokens = ["<|im_end|>", "<|endoftext|>"]   # a decode is read up to the first of these
+auc_min_class = 5                # the AUC is reported only if each class holds this many handoffs
+
+[cells.native]
+context_cap = 32768
+
+[cells.long]
+context_cap = 81920
+context_floor = 32768
+[cells.long.rope]
+rope_type = "yarn"
+factor = 2.5
+original_max_position_embeddings = 32768
